@@ -8,21 +8,40 @@ eps_inf_range = np.linspace(1, 5, 5)
 gamma_range = np.linspace(10, 50, 5)
 trans_phon_frequency_range = np.linspace(550, 950,5)
 
+num_oscillators = np.linspace(1, 5, 5)
+
 batch_size = 16
 
-harmonic=2 
+harmonic=3 
 A=20e-9
 z=10e-9
 n_wav = 128 * 2
+long_phon_frequency_stop = 960
+long_phon_frequency_step = 100
 
 wavenumber = np.linspace(0, 1000, n_wav)
 
+theta_in = np.deg2rad(60)
+c_r = 0.9
 
-def polarizability_to_vector(polarizability):
-    return np.concatenate((np.real(polarizability), np.imag(polarizability)))
 
 
-def generate_sample_vector(
+
+def alpha_fff_ref():
+    eps = 11.7
+    ref_sample = snompy.sample.bulk_sample(eps_sub=11.7) # Si
+    alpha_eff = snompy.fdm.eff_pol_n(sample=ref_sample, A_tip=A, n=harmonic, z_tip=z)
+
+    r = ref_sample.refl_coef(theta_in=theta_in)
+    fff_ref = (1 + c_r * r) ** 2
+
+    return alpha_eff, fff_ref
+
+def eta_to_vector(eta):
+    return np.concatenate((np.real(eta), np.imag(eta)))
+
+
+def generate_eta_vector(
     eps_inf,
     gamma,
     trans_phon_frequency,
@@ -41,30 +60,42 @@ def generate_sample_vector(
     )
     lorentz_sample = snompy.sample.bulk_sample(eps_sub=eps_sub)
 
-    polarizability = snompy.fdm.eff_pol_n(
+
+    r = lorentz_sample.refl_coef(theta_in=theta_in)
+
+    fff_sample = (1 + c_r * r) ** 2
+
+    alpha_ref, fff_ref = alpha_fff_ref()
+
+    alpha_eff_sample = snompy.fdm.eff_pol_n(
         sample=lorentz_sample,
         A_tip=A,
         n=harmonic,
         z_tip=z
     )
 
-    return polarizability_to_vector(polarizability)
+    eta = (fff_sample * alpha_eff_sample)/(fff_ref * alpha_ref)
+
+    return eta_to_vector(eta)
 
 
-def plot_first_sample(sample_vector, wavenumber_values=None, output_filename="average_training_instance.png"):
+def plot_first_sample(eta_vector, wavenumber_values=None, output_filename="first_training_instance.png"):
     if wavenumber_values is None:
         wavenumber_values = wavenumber
 
-    half_length = len(sample_vector) // 2
-    real_part = sample_vector[:half_length]
-    imag_part = sample_vector[half_length:]
+    half_length = len(eta_vector) // 2
+    eta_real = eta_vector[:half_length]
+    eta_imag = eta_vector[half_length:]
+    eta = eta_real + 1j * eta_imag
+    magnitude = np.abs(eta)
+    phase = np.angle(eta)
 
     plt.figure(figsize=(8, 5))
-    plt.plot(wavenumber_values, real_part, label="Real Part")
-    plt.plot(wavenumber_values, imag_part, label="Imaginary Part")
+    plt.plot(wavenumber_values, magnitude, label="Magnitude")
+    plt.plot(wavenumber_values, phase, label="Phase")
     plt.xlabel("Wavenumber")
-    plt.ylabel("Polarizability")
-    plt.title("Average Training Data Instance")
+    plt.ylabel("Response")
+    plt.title("First Training Data Instance")
     plt.legend()
     plt.tight_layout()
     plt.savefig(output_filename)
@@ -78,27 +109,29 @@ def create_training_data():
     for eps_inf in eps_inf_range:
         for gamma in gamma_range:
             for trans_phon_frequency in trans_phon_frequency_range:
-                long_phon_frequency_range = np.arange(trans_phon_frequency+10, 960, 100)
-                length_long = len(long_phon_frequency_range)
-                length_trans = len(trans_phon_frequency_range)
-                strength_multiple_range = np.pow(long_phon_frequency_range, 2) - np.pow(trans_phon_frequency_range[length_trans-length_long:], 2)
+                # Include the endpoint so trans_phon_frequency=950 still yields long_phon_frequency=960.
+                long_phon_frequency_range = np.arange(
+                    trans_phon_frequency + 10,
+                    long_phon_frequency_stop + 1,
+                    long_phon_frequency_step,
+                )
+                strength_multiple_range = (long_phon_frequency_range ** 2) - (trans_phon_frequency ** 2)
                 for strength_multiple in strength_multiple_range:
-                    sample_vector = generate_sample_vector(
+                    eta_vector = generate_eta_vector(
                         eps_inf,
                         gamma,
                         trans_phon_frequency,
                         strength_multiple * eps_inf
                     )
 
-                    data.append(sample_vector)
+                    data.append(eta_vector)
                     labels.append([eps_inf, gamma, trans_phon_frequency, strength_multiple])
 
-    average_sample_vector = np.mean(np.array(data, dtype=np.float32), axis=0)
-    plot_first_sample(average_sample_vector)
+    if data:
+        plot_first_sample(np.array(data[0], dtype=np.float32))
 
     data = torch.from_numpy(np.array(data, dtype=np.float32))
 
-    
 
     labels = torch.from_numpy(np.array(labels, dtype=np.float32))
 

@@ -1,0 +1,78 @@
+import snompy
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+
+n_wav = 256
+
+wavenumber = np.linspace(0, 1000, n_wav)
+
+eps_inf = 2
+
+harmonic=2 
+A=20e-9
+z=10e-9
+
+
+gamma_1 = 10
+trans_phon_freq_1 = 450
+long_phon_freq_1 = 460
+strength_1 = long_phon_freq_1**2 - trans_phon_freq_1**2
+
+gamma_2 = 20
+trans_phon_freq_2 = 650
+long_phon_freq_2 = 660
+strength_2 = long_phon_freq_2**2 - trans_phon_freq_2**2
+
+
+eps_sub_1 = snompy.sample.lorentz_perm(
+        wavenumber,
+        nu_j=trans_phon_freq_1,
+        gamma_j=gamma_1,
+        A_j=strength_1,
+        eps_inf=eps_inf
+    )
+
+eps_sub_2 = snompy.sample.lorentz_perm(
+        wavenumber,
+        nu_j=trans_phon_freq_2,
+        gamma_j=gamma_2,
+        A_j=strength_2,
+        eps_inf=0
+    )
+
+eps_sub = eps_sub_1 + eps_sub_2
+
+lorentz_sample = snompy.sample.bulk_sample(eps_sub=eps_sub)
+
+polarizability = snompy.fdm.eff_pol_n(
+    sample=lorentz_sample,
+    A_tip=A,
+    n=harmonic,
+    z_tip=z
+)
+
+
+plt.figure(figsize=(10, 6))
+plt.plot(wavenumber, polarizability.real, label="Real", linewidth=2)
+plt.plot(wavenumber, polarizability.real, label="Imag", linewidth=2, alpha=0.8)
+plt.xlabel("Wavenumber")
+plt.ylabel("Polarizability")
+plt.title("FDM Spectrum vs Recovered Spectrum")
+plt.legend()
+plt.tight_layout()
+plt.savefig("sample spectrum")
+plt.close()
+
+
+
+
+
+
+
+
+
+
+
+

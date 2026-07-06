@@ -2,7 +2,7 @@ import torch
 import matplotlib.pyplot as plt
 from torch import nn
 
-from fdmDataGen import (
+from data_gen import (
     dataset,
     n_wav,
 )

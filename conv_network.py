@@ -4,7 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 import numpy as np
 
-from fdmDataGen import (
+from data_gen import (
     dataset,
     n_wav,
 )

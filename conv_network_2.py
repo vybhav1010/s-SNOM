@@ -3,8 +3,9 @@ import matplotlib.pyplot as plt
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
+from pathlib import Path
 
-from fdmDataGen import (
+from data_gen import (
     dataset,
     n_wav,
 )
@@ -12,24 +13,24 @@ from fdmDataGen import (
 
 learning_rate = 1e-4
 batch_size = 4
-epochs = 1000
+epochs = 200
 weight_decay = 1e-5
+MODEL_PATH = Path("conv_network_2.pth")
 
 num_var = 4
-loss_weights = torch.tensor([1.0, 1e-2, 1e-5, 1e-8], dtype=torch.float32)
-
-
-def loss(pred, y):
-    weights = loss_weights.to(pred.device)
-    squared_error = (pred - y) ** 2
-    weighted_squared_error = squared_error * weights
-    return weighted_squared_error.mean()
-
-loss_fn = loss
+loss_fn = nn.MSELoss()
 mae_fn = nn.L1Loss()
 
 
-class NeuralNetwork(nn.Module):
+def normalize_labels(y, label_mean, label_std):
+    return (y - label_mean) / label_std
+
+
+def denormalize_labels(y_normalized, label_mean, label_std):
+    return y_normalized * label_std + label_mean
+
+
+class ConvNetwork(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
         self.conv1 = nn.Conv1d(1, 3, 25)
@@ -52,7 +53,7 @@ class NeuralNetwork(nn.Module):
         return x
 
 
-def train_loop(dataloader, model, loss_fn, optimizer):
+def train_loop(dataloader, model, loss_fn, optimizer, label_mean, label_std):
     size = len(dataloader.dataset)
     model.train()
     total_loss = 0.0
@@ -60,7 +61,8 @@ def train_loop(dataloader, model, loss_fn, optimizer):
 
     for batch, (X, y) in enumerate(dataloader):
         pred = model(X)
-        loss = loss_fn(pred, y)
+        y_normalized = normalize_labels(y, label_mean, label_std)
+        loss = loss_fn(pred, y_normalized)
         total_loss += loss.item()
 
         loss.backward()
@@ -73,14 +75,16 @@ def train_loop(dataloader, model, loss_fn, optimizer):
     return total_loss / num_batches
 
 
-def test_loop(dataloader, model, loss_fn, mae):
+def test_loop(dataloader, model, loss_fn, mae, label_mean, label_std):
     num_batches = len(dataloader)
     test_loss, test_mae = 0.0, 0.0
 
     with torch.no_grad():
         for X, y in dataloader:
-            pred = model(X)
-            test_loss += loss_fn(pred, y).item()
+            pred_normalized = model(X)
+            y_normalized = normalize_labels(y, label_mean, label_std)
+            test_loss += loss_fn(pred_normalized, y_normalized).item()
+            pred = denormalize_labels(pred_normalized, label_mean, label_std)
             test_mae += mae(pred, y).item()
 
     test_loss /= num_batches
@@ -97,7 +101,19 @@ def compute_training_medians(dataloader):
     return torch.cat(labels, dim=0).median(dim=0).values
 
 
-def evaluate_midpoint_sample(model, dataloader, training_medians):
+def compute_label_stats(dataloader):
+    labels = []
+
+    for _, y in dataloader:
+        labels.append(y)
+
+    all_labels = torch.cat(labels, dim=0)
+    label_mean = all_labels.mean(dim=0)
+    label_std = all_labels.std(dim=0).clamp_min(1e-6)
+    return label_mean, label_std
+
+
+def evaluate_midpoint_sample(model, dataloader, training_medians, label_mean, label_std):
     total_squared_error = torch.zeros(4)
     total_absolute_error = torch.zeros(4)
     total_samples = 0
@@ -105,7 +121,8 @@ def evaluate_midpoint_sample(model, dataloader, training_medians):
     model.eval()
     with torch.no_grad():
         for X, y in dataloader:
-            pred = model(X)
+            pred_normalized = model(X)
+            pred = denormalize_labels(pred_normalized, label_mean, label_std)
             total_squared_error += torch.sum((pred - y) ** 2, dim=0)
             total_absolute_error += torch.sum(torch.abs(pred - y), dim=0)
             total_samples += y.shape[0]
@@ -120,17 +137,17 @@ def evaluate_midpoint_sample(model, dataloader, training_medians):
     print(f"  eps_inf: {mean_mse[0].item():.6f}")
     print(f"  gamma: {mean_mse[1].item():.6f}")
     print(f"  trans_phon_frequency: {mean_mse[2].item():.6f}")
-    print(f"  strength: {mean_mse[3].item():.6f}")
+    print(f"  strength_multiple: {mean_mse[3].item():.6f}")
     print("Full evaluation mean MAE by quantity:")
     print(f"  eps_inf: {mean_mae[0].item():.6f}")
     print(f"  gamma: {mean_mae[1].item():.6f}")
     print(f"  trans_phon_frequency: {mean_mae[2].item():.6f}")
-    print(f"  strength: {mean_mae[3].item():.6f}")
+    print(f"  strength_multiple: {mean_mae[3].item():.6f}")
     print("Median-scaled percent error by quantity:")
     print(f"  eps_inf: {median_scaled_percent_error[0].item():.2f}%")
     print(f"  gamma: {median_scaled_percent_error[1].item():.2f}%")
     print(f"  trans_phon_frequency: {median_scaled_percent_error[2].item():.2f}%")
-    print(f"  strength: {median_scaled_percent_error[3].item():.2f}%")
+    print(f"  strength_multiple: {median_scaled_percent_error[3].item():.2f}%")
 
 
 def plot_losses(train_losses, val_losses):
@@ -151,8 +168,9 @@ def run_experiment(dataloaders):
     train_dataloader, val_dataloader, test_dataloader = dataloaders
 
     training_medians = compute_training_medians(train_dataloader)
+    label_mean, label_std = compute_label_stats(train_dataloader)
 
-    model = NeuralNetwork(n_wav * 2)
+    model = ConvNetwork(n_wav * 2)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     final_mae, final_loss = None, None
@@ -160,15 +178,25 @@ def run_experiment(dataloaders):
     val_losses = []
     for e in range(epochs):
         print(f"Epoch {e + 1}")
-        train_loss = train_loop(train_dataloader, model, loss_fn, optimizer)
-        _, val_loss = test_loop(val_dataloader, model, loss_fn, mae_fn)
+        train_loss = train_loop(train_dataloader, model, loss_fn, optimizer, label_mean, label_std)
+        _, val_loss = test_loop(val_dataloader, model, loss_fn, mae_fn, label_mean, label_std)
         train_losses.append(train_loss)
         val_losses.append(val_loss)
 
-    final_mae, final_loss = test_loop(test_dataloader, model, loss_fn, mae_fn)
-    evaluate_midpoint_sample(model, test_dataloader, training_medians)
+    final_mae, final_loss = test_loop(test_dataloader, model, loss_fn, mae_fn, label_mean, label_std)
+    evaluate_midpoint_sample(model, test_dataloader, training_medians, label_mean, label_std)
     plot_losses(train_losses, val_losses)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "label_mean": label_mean.cpu(),
+            "label_std": label_std.cpu(),
+        },
+        MODEL_PATH,
+    )
+    print(f"Saved model checkpoint to {MODEL_PATH}")
     return final_mae, final_loss
 
 
-run_experiment(dataset)
+if __name__ == "__main__":
+    run_experiment(dataset)
