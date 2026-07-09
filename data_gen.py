@@ -5,8 +5,20 @@ from torch.utils.data import DataLoader, TensorDataset, random_split
 import snompy
 
 eps_inf_range = np.linspace(1, 5, 5)
-gamma_range = np.linspace(10, 50, 5)
+gamma_ph_range = np.linspace(10, 50, 5)
+gamma_p_range = np.linspace(10, 50, 5)
 trans_phon_frequency_range = np.linspace(550, 950,5)
+plas_freq_range = np.linspace(400, 800, 5)
+PARAMETER_NAMES = (
+    "eps_inf",
+    "gamma_ph",
+    "gamma_p",
+    "plas_freq",
+    "trans_phon_frequency",
+    "strength_multiple",
+)
+NUM_PARAMETERS = len(PARAMETER_NAMES)
+
 
 num_oscillators = np.linspace(1, 5, 5)
 
@@ -18,6 +30,8 @@ z=10e-9
 n_wav = 512
 long_phon_frequency_stop = 960
 long_phon_frequency_step = 100
+
+
 
 wavenumber = np.linspace(0, 1000, n_wav)
 
@@ -40,23 +54,45 @@ def eta_to_vector(eta):
     return np.concatenate((np.real(eta), np.imag(eta)))
 
 
+def drude_wavenumber_grid(wavenumber_values):
+    drude_wavenumbers = np.asarray(wavenumber_values, dtype=np.float64).copy()
+    positive_wavenumbers = drude_wavenumbers[drude_wavenumbers > 0.0]
+    if positive_wavenumbers.size == 0:
+        raise ValueError("Drude permittivity requires at least one positive wavenumber.")
+    drude_wavenumbers[drude_wavenumbers <= 0.0] = np.min(positive_wavenumbers)
+    return drude_wavenumbers
+
+
 def generate_eta_vector(
     eps_inf,
-    gamma,
+    gamma_ph,
+    gamma_p,
     trans_phon_frequency,
+    plas_freq,
     strength,
     wavenumber_values=None
 ):
     if wavenumber_values is None:
         wavenumber_values = wavenumber
 
-    eps_sub = snompy.sample.lorentz_perm(
+    eps_lorentz = snompy.sample.lorentz_perm(
         wavenumber_values,
         nu_j=trans_phon_frequency,
-        gamma_j=gamma,
+        gamma_j=gamma_ph,
         A_j=strength,
         eps_inf=eps_inf
     )
+
+    eps_drude = snompy.sample.drude_perm(
+        drude_wavenumber_grid(wavenumber_values),
+        nu_plasma=plas_freq,
+        gamma=gamma_p,
+        eps_inf=0.0,
+    )
+
+    eps_sub = eps_lorentz + eps_drude
+
+
     lorentz_sample = snompy.sample.bulk_sample(eps_sub=eps_sub)
 
 
@@ -106,25 +142,29 @@ def create_training_data():
     data = []
     labels = []
     for eps_inf in eps_inf_range:
-        for gamma in gamma_range:
-            for trans_phon_frequency in trans_phon_frequency_range:
-                # Include the endpoint so trans_phon_frequency=950 still yields long_phon_frequency=960.
-                long_phon_frequency_range = np.arange(
-                    trans_phon_frequency + 10,
-                    long_phon_frequency_stop + 1,
-                    long_phon_frequency_step,
-                )
-                strength_multiple_range = (long_phon_frequency_range ** 2) - (trans_phon_frequency ** 2)
-                for strength_multiple in strength_multiple_range:
-                    eta_vector = generate_eta_vector(
-                        eps_inf,
-                        gamma,
-                        trans_phon_frequency,
-                        strength_multiple * eps_inf
-                    )
+        for gamma_ph in gamma_ph_range:
+            for gamma_p in gamma_p_range:
+                for plas_freq in plas_freq_range:
+                    for trans_phon_frequency in trans_phon_frequency_range:
+                        # Include the endpoint so trans_phon_frequency=950 still yields long_phon_frequency=960.
+                        long_phon_frequency_range = np.arange(
+                            trans_phon_frequency + 10,
+                            long_phon_frequency_stop + 1,
+                            long_phon_frequency_step,
+                        )
+                        strength_multiple_range = (long_phon_frequency_range ** 2) - (trans_phon_frequency ** 2)
+                        for strength_multiple in strength_multiple_range:
+                            eta_vector = generate_eta_vector(
+                                eps_inf,
+                                gamma_ph,
+                                gamma_p,
+                                trans_phon_frequency,
+                                plas_freq,
+                                strength_multiple * eps_inf
+                            )
 
-                    data.append(eta_vector)
-                    labels.append([eps_inf, gamma, trans_phon_frequency, strength_multiple])
+                            data.append(eta_vector)
+                            labels.append([eps_inf, gamma_ph, gamma_p, plas_freq, trans_phon_frequency, strength_multiple])
 
     if data:
         plot_first_sample(np.array(data[0], dtype=np.float32))

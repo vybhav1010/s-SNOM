@@ -6,6 +6,8 @@ import numpy as np
 from pathlib import Path
 
 from data_gen import (
+    NUM_PARAMETERS,
+    PARAMETER_NAMES,
     dataset,
     n_wav,
 )
@@ -17,7 +19,7 @@ epochs = 200
 weight_decay = 1e-5
 MODEL_PATH = Path("conv_network_2.pth")
 
-num_var = 4
+num_var = NUM_PARAMETERS
 loss_fn = nn.MSELoss()
 mae_fn = nn.L1Loss()
 
@@ -41,7 +43,7 @@ class ConvNetwork(nn.Module):
         flattened_dim = self._compute_flattened_dim(input_dim)
         self.fc1 = nn.Linear(flattened_dim, 300)
         self.fc2 = nn.Linear(300, 300)
-        self.fc3 = nn.Linear(300, 4)
+        self.fc3 = nn.Linear(300, num_var)
 
     def _compute_flattened_dim(self, input_dim):
         with torch.no_grad():
@@ -125,8 +127,8 @@ def compute_label_stats(dataloader):
 
 
 def evaluate_midpoint_sample(model, dataloader, training_medians, label_mean, label_std):
-    total_squared_error = torch.zeros(4)
-    total_absolute_error = torch.zeros(4)
+    total_squared_error = torch.zeros(num_var)
+    total_absolute_error = torch.zeros(num_var)
     total_samples = 0
 
     model.eval()
@@ -145,20 +147,14 @@ def evaluate_midpoint_sample(model, dataloader, training_medians, label_mean, la
     median_scaled_percent_error = 100.0 * mean_mae / medians
 
     print("Full evaluation mean MSE by quantity:")
-    print(f"  eps_inf: {mean_mse[0].item():.6f}")
-    print(f"  gamma: {mean_mse[1].item():.6f}")
-    print(f"  trans_phon_frequency: {mean_mse[2].item():.6f}")
-    print(f"  strength_multiple: {mean_mse[3].item():.6f}")
+    for index, name in enumerate(PARAMETER_NAMES):
+        print(f"  {name}: {mean_mse[index].item():.6f}")
     print("Full evaluation mean MAE by quantity:")
-    print(f"  eps_inf: {mean_mae[0].item():.6f}")
-    print(f"  gamma: {mean_mae[1].item():.6f}")
-    print(f"  trans_phon_frequency: {mean_mae[2].item():.6f}")
-    print(f"  strength_multiple: {mean_mae[3].item():.6f}")
+    for index, name in enumerate(PARAMETER_NAMES):
+        print(f"  {name}: {mean_mae[index].item():.6f}")
     print("Median-scaled percent error by quantity:")
-    print(f"  eps_inf: {median_scaled_percent_error[0].item():.2f}%")
-    print(f"  gamma: {median_scaled_percent_error[1].item():.2f}%")
-    print(f"  trans_phon_frequency: {median_scaled_percent_error[2].item():.2f}%")
-    print(f"  strength_multiple: {median_scaled_percent_error[3].item():.2f}%")
+    for index, name in enumerate(PARAMETER_NAMES):
+        print(f"  {name}: {median_scaled_percent_error[index].item():.2f}%")
 
 
 def plot_losses(train_losses, val_losses):

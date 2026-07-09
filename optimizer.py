@@ -9,14 +9,18 @@ import sys
 from conv_network_2 import ConvNetwork, MODEL_PATH
 from data_gen import (
     A,
+    PARAMETER_NAMES,
     alpha_fff_ref,
     c_r,
+    drude_wavenumber_grid,
     eps_inf_range,
-    gamma_range,
+    gamma_p_range,
+    gamma_ph_range,
     harmonic,
     long_phon_frequency_stop,
     long_phon_frequency_step,
     n_wav,
+    plas_freq_range,
     theta_in,
     trans_phon_frequency_range,
     wavenumber,
@@ -31,16 +35,23 @@ def eta_to_vector(eta):
 
 
 def epsilon_from_params(params, wavenumbers):
-    eps_inf, trans_phon_freq, gamma, strength_multiple = params
+    eps_inf, gamma_ph, gamma_p, plas_freq, trans_phon_freq, strength_multiple = params
     strength = eps_inf * strength_multiple
 
-    return snompy.sample.lorentz_perm(
+    eps_lorentz = snompy.sample.lorentz_perm(
         wavenumbers,
         nu_j=trans_phon_freq,
-        gamma_j=gamma,
+        gamma_j=gamma_ph,
         A_j=strength,
         eps_inf=eps_inf,
     )
+    eps_drude = snompy.sample.drude_perm(
+        drude_wavenumber_grid(wavenumbers),
+        nu_plasma=plas_freq,
+        gamma=gamma_p,
+        eps_inf=0.0,
+    )
+    return eps_lorentz + eps_drude
 
 def forward_function(eps_sub):
     eps_sub = np.asarray(eps_sub, dtype=np.complex128)
@@ -109,12 +120,7 @@ def neural_net_initial_guess(model, eta_vector):
     with torch.no_grad():
         prediction = model(spectrum_tensor).squeeze(0).cpu().numpy()
 
-    eps_inf = float(prediction[0])
-    gamma = float(prediction[1])
-    trans_phon_freq = float(prediction[2])
-    strength_multiple = float(prediction[3])
-
-    return np.array([eps_inf, trans_phon_freq, gamma, strength_multiple], dtype=np.float64)
+    return prediction.astype(np.float64)
 
 
 def denormalize_prediction(prediction, label_mean, label_std):
@@ -136,7 +142,9 @@ def every_other_midpoints(values):
 
 def build_intermediate_test_cases():
     eps_inf_values = every_other_midpoints(eps_inf_range)
-    gamma_values = every_other_midpoints(gamma_range)
+    gamma_ph_values = every_other_midpoints(gamma_ph_range)
+    gamma_p_values = every_other_midpoints(gamma_p_range)
+    plas_freq_values = every_other_midpoints(plas_freq_range)
     trans_phon_freq_values = every_other_midpoints(trans_phon_frequency_range)
     long_phon_training_values = np.arange(
         float(np.min(trans_phon_frequency_range)) + 10.0,
@@ -148,17 +156,26 @@ def build_intermediate_test_cases():
 
     test_cases = []
     for eps_inf in eps_inf_values:
-        for gamma in gamma_values:
-            for trans_phon_freq in trans_phon_freq_values:
-                valid_long_phon_values = long_phon_values[long_phon_values > trans_phon_freq]
-                for long_phon_freq in valid_long_phon_values:
-                    strength_multiple = (long_phon_freq ** 2) - (trans_phon_freq ** 2)
-                    test_cases.append(
-                        np.array(
-                            [eps_inf, trans_phon_freq, gamma, strength_multiple],
-                            dtype=np.float64,
-                        )
-                    )
+        for gamma_ph in gamma_ph_values:
+            for gamma_p in gamma_p_values:
+                for plas_freq in plas_freq_values:
+                    for trans_phon_freq in trans_phon_freq_values:
+                        valid_long_phon_values = long_phon_values[long_phon_values > trans_phon_freq]
+                        for long_phon_freq in valid_long_phon_values:
+                            strength_multiple = (long_phon_freq ** 2) - (trans_phon_freq ** 2)
+                            test_cases.append(
+                                np.array(
+                                    [
+                                        eps_inf,
+                                        gamma_ph,
+                                        gamma_p,
+                                        plas_freq,
+                                        trans_phon_freq,
+                                        strength_multiple,
+                                    ],
+                                    dtype=np.float64,
+                                )
+                            )
 
     return test_cases
 
@@ -168,8 +185,10 @@ def parameter_bounds():
     lower_bounds = np.array(
         [
             float(np.min(eps_inf_range)),
+            float(np.min(gamma_ph_range)),
+            float(np.min(gamma_p_range)),
+            float(np.min(plas_freq_range)),
             float(np.min(trans_phon_frequency_range)),
-            float(np.min(gamma_range)),
             float(strength_multiple_min),
         ],
         dtype=np.float64,
@@ -177,8 +196,10 @@ def parameter_bounds():
     upper_bounds = np.array(
         [
             float(np.max(eps_inf_range)),
+            float(np.max(gamma_ph_range)),
+            float(np.max(gamma_p_range)),
+            float(np.max(plas_freq_range)),
             float(np.max(trans_phon_frequency_range)),
-            float(np.max(gamma_range)),
             float(strength_multiple_max),
         ],
         dtype=np.float64,
@@ -195,12 +216,7 @@ def optimize_parameters(eta_vector, model_path, wavenumbers=None):
 
     initial_guess_raw = denormalize_prediction(normalized_guess, label_mean, label_std)
 
-    eps_inf = float(initial_guess_raw[0])
-    gamma = float(initial_guess_raw[1])
-    trans_phon_freq = float(initial_guess_raw[2])
-    strength_multiple = float(initial_guess_raw[3])
-
-    initial_guess = np.array([eps_inf, trans_phon_freq, gamma, strength_multiple], dtype=np.float64)
+    initial_guess = np.asarray(initial_guess_raw, dtype=np.float64)
     lower_bounds, upper_bounds = parameter_bounds()
     clipped_guess = np.clip(initial_guess, lower_bounds, upper_bounds)
     initial_residual = residual(clipped_guess, wavenumbers, eta_vector)
@@ -217,12 +233,13 @@ def optimize_parameters(eta_vector, model_path, wavenumbers=None):
     #     x_scale=upper_bounds[peak_indices] - lower_bounds[peak_indices],
     # )
 
-    best_trans_phon_freq = clipped_guess[1]
+    trans_phon_freq_index = PARAMETER_NAMES.index("trans_phon_frequency")
+    best_trans_phon_freq = clipped_guess[trans_phon_freq_index]
     best_residual_norm = initial_residual_norm
     test_params = clipped_guess.copy()
     for trans_phon_freq in range(int(trans_phon_frequency_range[0]), int(trans_phon_frequency_range[-1]) + 1):
         
-        test_params[1] = trans_phon_freq
+        test_params[trans_phon_freq_index] = trans_phon_freq
 
         if(np.linalg.norm(residual(test_params, wavenumbers, eta_vector)) < best_residual_norm):
             best_trans_phon_freq = trans_phon_freq
@@ -230,7 +247,7 @@ def optimize_parameters(eta_vector, model_path, wavenumbers=None):
 
     
     peak_aligned_guess = clipped_guess.copy()
-    peak_aligned_guess[1] = best_trans_phon_freq
+    peak_aligned_guess[trans_phon_freq_index] = best_trans_phon_freq
 
 
     result = least_squares(
@@ -433,18 +450,16 @@ def run_intermediate_value_test_loop(model_path):
 
     print("Intermediate-value test grid:")
     print(f"  eps_inf: {every_other_midpoints(eps_inf_range)}")
-    print(f"  gamma: {every_other_midpoints(gamma_range)}")
+    print(f"  gamma_ph: {every_other_midpoints(gamma_ph_range)}")
+    print(f"  gamma_p: {every_other_midpoints(gamma_p_range)}")
+    print(f"  plas_freq: {every_other_midpoints(plas_freq_range)}")
     print(f"  trans_phon_frequency: {every_other_midpoints(trans_phon_frequency_range)}")
     print(f"  cases: {len(evaluations)}")
     print("Mean percent error by quantity:")
-    print(f"  initial eps_inf: {initial_percent_errors[:, 0].mean():.2f}%")
-    print(f"  initial trans_phon_frequency: {initial_percent_errors[:, 1].mean():.2f}%")
-    print(f"  initial gamma: {initial_percent_errors[:, 2].mean():.2f}%")
-    print(f"  initial strength_multiple: {initial_percent_errors[:, 3].mean():.2f}%")
-    print(f"  recovered eps_inf: {recovered_percent_errors[:, 0].mean():.2f}%")
-    print(f"  recovered trans_phon_frequency: {recovered_percent_errors[:, 1].mean():.2f}%")
-    print(f"  recovered gamma: {recovered_percent_errors[:, 2].mean():.2f}%")
-    print(f"  recovered strength_multiple: {recovered_percent_errors[:, 3].mean():.2f}%")
+    for index, name in enumerate(PARAMETER_NAMES):
+        print(f"  initial {name}: {initial_percent_errors[:, index].mean():.2f}%")
+    for index, name in enumerate(PARAMETER_NAMES):
+        print(f"  recovered {name}: {recovered_percent_errors[:, index].mean():.2f}%")
     print("Worst recovered case:")
     worst_index = int(np.argmax(recovered_percent_errors.mean(axis=1)))
     worst_case = evaluations[worst_index]

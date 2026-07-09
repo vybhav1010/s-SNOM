@@ -5,6 +5,8 @@ import torch.nn.functional as F
 import numpy as np
 
 from data_gen import (
+    NUM_PARAMETERS,
+    PARAMETER_NAMES,
     dataset,
     n_wav,
 )
@@ -15,8 +17,8 @@ batch_size = 4
 epochs = 200
 weight_decay = 1e-5
 
-num_var = 4
-loss_weights = torch.tensor([1.0, 1e-2, 1e-5, 1e-7], dtype=torch.float32)
+num_var = NUM_PARAMETERS
+loss_weights = torch.tensor([1.0, 1e-2, 1e-2, 1e-5, 1e-5, 1e-7], dtype=torch.float32)
 
 
 def loss(pred, y):
@@ -36,7 +38,7 @@ class NeuralNetwork(nn.Module):
         self.conv2 = nn.Conv1d(2, 2, 15)
         self.conv3 = nn.Conv1d(2, 2, 5)
         self.fc1 = nn.Linear(214 * 2, 300)
-        self.fc2 = nn.Linear(300, 4)
+        self.fc2 = nn.Linear(300, num_var)
 
     def forward(self, x):
         x = x.unsqueeze(1)
@@ -95,8 +97,8 @@ def compute_training_medians(dataloader):
 
 
 def evaluate_midpoint_sample(model, dataloader, training_medians):
-    total_squared_error = torch.zeros(4)
-    total_absolute_error = torch.zeros(4)
+    total_squared_error = torch.zeros(num_var)
+    total_absolute_error = torch.zeros(num_var)
     total_samples = 0
 
     model.eval()
@@ -114,20 +116,14 @@ def evaluate_midpoint_sample(model, dataloader, training_medians):
     median_scaled_percent_error = 100.0 * mean_mae / medians
 
     print("Full evaluation mean MSE by quantity:")
-    print(f"  eps_inf: {mean_mse[0].item():.6f}")
-    print(f"  gamma: {mean_mse[1].item():.6f}")
-    print(f"  trans_phon_frequency: {mean_mse[2].item():.6f}")
-    print(f"  strength: {mean_mse[3].item():.6f}")
+    for index, name in enumerate(PARAMETER_NAMES):
+        print(f"  {name}: {mean_mse[index].item():.6f}")
     print("Full evaluation mean MAE by quantity:")
-    print(f"  eps_inf: {mean_mae[0].item():.6f}")
-    print(f"  gamma: {mean_mae[1].item():.6f}")
-    print(f"  trans_phon_frequency: {mean_mae[2].item():.6f}")
-    print(f"  strength: {mean_mae[3].item():.6f}")
+    for index, name in enumerate(PARAMETER_NAMES):
+        print(f"  {name}: {mean_mae[index].item():.6f}")
     print("Median-scaled percent error by quantity:")
-    print(f"  eps_inf: {median_scaled_percent_error[0].item():.2f}%")
-    print(f"  gamma: {median_scaled_percent_error[1].item():.2f}%")
-    print(f"  trans_phon_frequency: {median_scaled_percent_error[2].item():.2f}%")
-    print(f"  strength: {median_scaled_percent_error[3].item():.2f}%")
+    for index, name in enumerate(PARAMETER_NAMES):
+        print(f"  {name}: {median_scaled_percent_error[index].item():.2f}%")
 
 
 def plot_losses(train_losses, val_losses):
