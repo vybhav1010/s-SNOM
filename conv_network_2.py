@@ -33,12 +33,22 @@ def denormalize_labels(y_normalized, label_mean, label_std):
 class ConvNetwork(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
-        self.conv1 = nn.Conv1d(1, 3, 25)
+        self.conv1 = nn.Conv1d(1, 4, 25)
         self.pool = nn.MaxPool1d(2)
-        self.conv2 = nn.Conv1d(3, 3, 15)
-        self.conv3 = nn.Conv1d(3, 3, 5)
-        self.fc1 = nn.Linear(115 * 3, 300)
-        self.fc2 = nn.Linear(300, 4)
+        self.conv2 = nn.Conv1d(4, 4, 15)
+        self.conv3 = nn.Conv1d(4, 4, 5)
+        self.input_dim = input_dim
+        flattened_dim = self._compute_flattened_dim(input_dim)
+        self.fc1 = nn.Linear(flattened_dim, 300)
+        self.fc2 = nn.Linear(300, 300)
+        self.fc3 = nn.Linear(300, 4)
+
+    def _compute_flattened_dim(self, input_dim):
+        with torch.no_grad():
+            example = torch.zeros(1, 1, input_dim)
+            example = self.pool(F.relu(self.conv1(example)))
+            example = self.pool(F.relu(self.conv2(example)))
+            return int(torch.flatten(example, 1).shape[1])
 
     def forward(self, x):
         x = x.unsqueeze(1)
@@ -49,7 +59,8 @@ class ConvNetwork(nn.Module):
 
         x = torch.flatten(x, 1)
         x = F.relu(self.fc1(x))
-        x = self.fc2(x)
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
 
 

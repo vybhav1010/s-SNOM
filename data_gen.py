@@ -15,7 +15,7 @@ batch_size = 16
 harmonic=3 
 A=20e-9
 z=10e-9
-n_wav = 128 * 2
+n_wav = 512
 long_phon_frequency_stop = 960
 long_phon_frequency_step = 100
 
@@ -23,7 +23,6 @@ wavenumber = np.linspace(0, 1000, n_wav)
 
 theta_in = np.deg2rad(60)
 c_r = 0.9
-
 
 
 

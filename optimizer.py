@@ -30,17 +30,20 @@ def eta_to_vector(eta):
     return np.concatenate((np.real(eta), np.imag(eta)))
 
 
-def forward_function(params, wavenumbers):
+def epsilon_from_params(params, wavenumbers):
     eps_inf, trans_phon_freq, gamma, strength_multiple = params
     strength = eps_inf * strength_multiple
 
-    eps_sub = snompy.sample.lorentz_perm(
+    return snompy.sample.lorentz_perm(
         wavenumbers,
         nu_j=trans_phon_freq,
         gamma_j=gamma,
         A_j=strength,
         eps_inf=eps_inf,
     )
+
+def forward_function(eps_sub):
+    eps_sub = np.asarray(eps_sub, dtype=np.complex128)
     lorentz_sample = snompy.sample.bulk_sample(eps_sub=eps_sub)
     sample_r = lorentz_sample.refl_coef(theta_in=theta_in)
     far_field_sample = (1 + c_r * sample_r) ** 2
@@ -55,8 +58,13 @@ def forward_function(params, wavenumbers):
     return eta_to_vector(eta)
 
 
+def forward_function_from_params(params, wavenumbers):
+    eps_sub = epsilon_from_params(params, wavenumbers)
+    return forward_function(eps_sub)
+
+
 def residual(params, wavenumbers, expected_eta_vector):
-    return forward_function(params, wavenumbers) - expected_eta_vector
+    return forward_function_from_params(params, wavenumbers) - expected_eta_vector
 
 
 def residual_subset(
@@ -89,6 +97,14 @@ def load_model(model_path):
 
 
 def neural_net_initial_guess(model, eta_vector):
+    expected_input_dim = n_wav * 2
+    if eta_vector.shape != (expected_input_dim,):
+        raise ValueError(
+            "eta_vector length does not match the current model input size. "
+            f"Expected shape ({expected_input_dim},), got {eta_vector.shape}. "
+            "Make sure the evaluation grid uses the same n_wav as data_gen.py "
+            "and the trained checkpoint."
+        )
     spectrum_tensor = torch.from_numpy(eta_vector.astype(np.float32)).unsqueeze(0)
     with torch.no_grad():
         prediction = model(spectrum_tensor).squeeze(0).cpu().numpy()
@@ -256,7 +272,7 @@ def evaluate_optimizer_case(true_params, model_path, wavenumbers=None):
     if wavenumbers is None:
         wavenumbers = wavenumber
 
-    eta_vector = forward_function(true_params, wavenumbers)
+    eta_vector = forward_function_from_params(true_params, wavenumbers)
     initial_guess, result, optimization_seconds = optimize_parameters(
         eta_vector, model_path, wavenumbers=wavenumbers
     )
@@ -293,10 +309,10 @@ def plot_spectrum_comparison(
     if wavenumbers is None:
         wavenumbers = wavenumber
 
-    true_eta = forward_function(true_params, wavenumbers)
-    initial_eta = forward_function(initial_params, wavenumbers)
-    peak_aligned_eta = forward_function(peak_aligned_params, wavenumbers)
-    recovered_eta = forward_function(recovered_params, wavenumbers)
+    true_eta = forward_function_from_params(true_params, wavenumbers)
+    initial_eta = forward_function_from_params(initial_params, wavenumbers)
+    peak_aligned_eta = forward_function_from_params(peak_aligned_params, wavenumbers)
+    recovered_eta = forward_function_from_params(recovered_params, wavenumbers)
 
     half_length = len(true_eta) // 2
     true_real = true_eta[:half_length]
