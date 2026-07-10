@@ -7,7 +7,7 @@ import numpy as np
 from data_gen import (
     NUM_PARAMETERS,
     PARAMETER_NAMES,
-    dataset,
+    load_or_create_training_data,
     n_wav,
 )
 
@@ -164,4 +164,5 @@ def run_experiment(dataloaders):
     return final_mae, final_loss
 
 
-run_experiment(dataset)
+if __name__ == "__main__":
+    run_experiment(load_or_create_training_data())

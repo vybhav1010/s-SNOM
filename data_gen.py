@@ -3,10 +3,11 @@ import torch
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset, random_split
 import snompy
+from pathlib import Path
 
 eps_inf_range = np.linspace(1, 5, 5)
 gamma_ph_range = np.linspace(10, 50, 5)
-gamma_p_range = np.linspace(10, 50, 5)
+gamma_p_range = np.linspace(250, 500, 5)
 trans_phon_frequency_range = np.linspace(550, 950,5)
 plas_freq_range = np.linspace(400, 800, 5)
 PARAMETER_NAMES = (
@@ -18,6 +19,7 @@ PARAMETER_NAMES = (
     "strength_multiple",
 )
 NUM_PARAMETERS = len(PARAMETER_NAMES)
+TRAINING_DATA_PATH = "training_data.npz"
 
 
 num_oscillators = np.linspace(1, 5, 5)
@@ -33,7 +35,7 @@ long_phon_frequency_step = 100
 
 
 
-wavenumber = np.linspace(0, 1000, n_wav)
+wavenumber = np.linspace(100, 1000, n_wav)
 
 theta_in = np.deg2rad(60)
 c_r = 0.9
@@ -121,13 +123,10 @@ def plot_first_sample(eta_vector, wavenumber_values=None, output_filename="first
     half_length = len(eta_vector) // 2
     eta_real = eta_vector[:half_length]
     eta_imag = eta_vector[half_length:]
-    eta = eta_real + 1j * eta_imag
-    magnitude = np.abs(eta)
-    phase = np.angle(eta)
 
     plt.figure(figsize=(8, 5))
-    plt.plot(wavenumber_values, magnitude, label="Magnitude")
-    plt.plot(wavenumber_values, phase, label="Phase")
+    plt.plot(wavenumber_values, eta_real, label="Real")
+    plt.plot(wavenumber_values, eta_imag, label="Imaginary")
     plt.xlabel("Wavenumber")
     plt.ylabel("Response")
     plt.title("First Training Data Instance")
@@ -135,10 +134,39 @@ def plot_first_sample(eta_vector, wavenumber_values=None, output_filename="first
     plt.tight_layout()
     plt.savefig(output_filename)
     plt.close()
+    print(f"Saved first training sample plot to {output_filename}")
 
 
+def save_training_data_npz(data, labels, output_path=TRAINING_DATA_PATH):
+    np.savez_compressed(
+        output_path,
+        data=data,
+        labels=labels,
+        wavenumber=wavenumber.astype(np.float32),
+        parameter_names=np.array(PARAMETER_NAMES),
+    )
+    print(f"Saved training data to {output_path}")
 
-def create_training_data():
+
+def build_dataloaders(data, labels):
+    data = torch.from_numpy(np.asarray(data, dtype=np.float32))
+    labels = torch.from_numpy(np.asarray(labels, dtype=np.float32))
+
+    dataset = TensorDataset(data, labels)
+    train_length = int(len(dataset) * 0.7)
+    val_length = int(len(dataset) * 0.15)
+    test_length = len(dataset) - train_length - val_length
+
+    train, val, test = random_split(dataset, [train_length, val_length, test_length])
+
+    train_dataloader = DataLoader(train, batch_size, shuffle=True)
+    val_dataloader = DataLoader(val, batch_size, shuffle=False)
+    test_dataloader = DataLoader(test, batch_size, shuffle=False)
+
+    return train_dataloader, val_dataloader, test_dataloader
+
+
+def create_training_data(save_npz=True):
     data = []
     labels = []
     for eps_inf in eps_inf_range:
@@ -169,36 +197,46 @@ def create_training_data():
     if data:
         plot_first_sample(np.array(data[0], dtype=np.float32))
 
-    data = torch.from_numpy(np.array(data, dtype=np.float32))
+    data_array = np.array(data, dtype=np.float32)
+    labels_array = np.array(labels, dtype=np.float32)
+    if save_npz:
+        save_training_data_npz(data_array, labels_array)
+
+    return build_dataloaders(data_array, labels_array)
 
 
-    labels = torch.from_numpy(np.array(labels, dtype=np.float32))
+def create_training_data_from_npz(npz_path=TRAINING_DATA_PATH):
+    with np.load(npz_path) as archive:
+        data = archive["data"]
+        labels = archive["labels"]
+        wavenumber_values = archive.get("wavenumber", wavenumber)
 
-    dataset = TensorDataset(data, labels)
-    train_length = int(len(dataset) * 0.7)
-    val_length = int(len(dataset) * 0.15)
-    test_length = len(dataset) - train_length - val_length
+    if data.shape[1] != n_wav * 2:
+        raise ValueError(
+            f"Expected data vectors of length {n_wav * 2}, got {data.shape[1]}."
+        )
+    if labels.shape[1] != NUM_PARAMETERS:
+        raise ValueError(
+            f"Expected {NUM_PARAMETERS} label columns, got {labels.shape[1]}."
+        )
+    if len(data) == 0:
+        raise ValueError("Training archive contains no samples.")
 
-    train, val, test = random_split(dataset, [train_length, val_length, test_length])
+    print(f"Loaded training data from {npz_path}")
+    plot_first_sample(data[0], wavenumber_values=wavenumber_values)
+    return build_dataloaders(data, labels)
 
-    train_dataloader = DataLoader(train, batch_size, shuffle=True)
-    val_dataloader = DataLoader(val, batch_size, shuffle=False)
-    test_dataloader = DataLoader(test, batch_size, shuffle=False)
 
-    return train_dataloader, val_dataloader, test_dataloader
+def load_or_create_training_data(npz_path=TRAINING_DATA_PATH):
+    # if Path(npz_path).exists():
+    #     return create_training_data_from_npz(npz_path)
+    return create_training_data()
 
 
 def main():
-    train_dataloader, val_dataloader, test_dataloader = create_training_data()
+    train_dataloader, val_dataloader, test_dataloader = load_or_create_training_data()
     print(train_dataloader, val_dataloader, test_dataloader)
 
 
-dataset = create_training_data()
-
-    
-                    
-
-
-
-
-                    
+if __name__ == "__main__":
+    main()

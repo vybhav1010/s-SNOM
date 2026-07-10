@@ -1,10 +1,31 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.optimize import least_squares
 from time import perf_counter
 from conv_network_2 import ConvNetwork, MODEL_PATH
-from data_gen import A, c_r, eta_to_vector, harmonic, n_wav, theta_in, wavenumber, z
+from data_gen import (
+    A,
+    c_r,
+    drude_wavenumber_grid,
+    eps_inf_range,
+    eta_to_vector,
+    gamma_p_range,
+    gamma_ph_range,
+    harmonic,
+    n_wav,
+    plas_freq_range,
+    theta_in,
+    trans_phon_frequency_range,
+    wavenumber,
+    z,
+)
 from kk_optimizer import kk_optimize
-from optimizer import optimize_parameters, forward_function_from_params
+from optimizer import (
+    compute_strength_multiple_bounds,
+    epsilon_from_params,
+    forward_function,
+    optimize_parameters,
+)
 from peak_fit_plots import plot_peak_fit_progress
 import scipy.stats
 import snompy
@@ -14,6 +35,8 @@ eps_inf = 1.6
 gamma = 20
 trans_phon_frequency = 876
 long_phon_frequency = 886
+drude_gamma = float(np.median(gamma_p_range))
+drude_plasma_frequency = float(np.median(plas_freq_range))
 
 batch_size = 16
 
@@ -102,14 +125,14 @@ def plot_eta_summary(
     axes[0, 0].plot(
         wavenumber_values,
         lorentz_eta.real,
-        label="Recovered Lorentz Re(eta)",
+        label="Initial Joint Re(eta)",
         linewidth=2,
         linestyle=":",
     )
     axes[0, 0].plot(
         wavenumber_values,
         lorentz_eta.imag,
-        label="Recovered Lorentz Im(eta)",
+        label="Initial Joint Im(eta)",
         linewidth=2,
         linestyle=":",
     )
@@ -135,14 +158,14 @@ def plot_eta_summary(
     axes[0, 1].plot(
         windowed_wavenumber,
         lorentz_real_abs[window_mask],
-        label="Lorentz |Re(eta) Error|",
+        label="Initial Joint |Re(eta) Error|",
         linewidth=2,
         linestyle=":",
     )
     axes[0, 1].plot(
         windowed_wavenumber,
         lorentz_imag_abs[window_mask],
-        label="Lorentz |Im(eta) Error|",
+        label="Initial Joint |Im(eta) Error|",
         linewidth=2,
         linestyle=":",
     )
@@ -169,14 +192,14 @@ def plot_eta_summary(
     axes[1, 0].plot(
         windowed_wavenumber,
         lorentz_real_pct[window_mask],
-        label="Lorentz Re(eta) % Error",
+        label="Initial Joint Re(eta) % Error",
         linewidth=2,
         linestyle=":",
     )
     axes[1, 0].plot(
         windowed_wavenumber,
         lorentz_imag_pct[window_mask],
-        label="Lorentz Im(eta) % Error",
+        label="Initial Joint Im(eta) % Error",
         linewidth=2,
         linestyle=":",
     )
@@ -258,14 +281,14 @@ def plot_dielectric_summary(
     axes[0].plot(
         wavenumber_values,
         lorentz_eps.real,
-        label="Recovered Lorentz Re(eps)",
+        label="Initial Joint Re(eps)",
         linewidth=2,
         linestyle=":",
     )
     axes[0].plot(
         wavenumber_values,
         lorentz_eps.imag,
-        label="Recovered Lorentz Im(eps)",
+        label="Initial Joint Im(eps)",
         linewidth=2,
         linestyle=":",
     )
@@ -291,14 +314,14 @@ def plot_dielectric_summary(
     axes[1].plot(
         windowed_wavenumber,
         lorentz_real_abs[window_mask],
-        label="Lorentz |Re(eps) Error|",
+        label="Initial Joint |Re(eps) Error|",
         linewidth=2,
         linestyle=":",
     )
     axes[1].plot(
         windowed_wavenumber,
         lorentz_imag_abs[window_mask],
-        label="Lorentz |Im(eps) Error|",
+        label="Initial Joint |Im(eps) Error|",
         linewidth=2,
         linestyle=":",
     )
@@ -327,14 +350,14 @@ def plot_dielectric_summary(
     axes[2].plot(
         windowed_wavenumber,
         lorentz_real_pct[window_mask],
-        label="Lorentz Re(eps) % Error",
+        label="Initial Joint Re(eps) % Error",
         linewidth=2,
         linestyle=":",
     )
     axes[2].plot(
         windowed_wavenumber,
         lorentz_imag_pct[window_mask],
-        label="Lorentz Im(eps) % Error",
+        label="Initial Joint Im(eps) % Error",
         linewidth=2,
         linestyle=":",
     )
@@ -382,13 +405,78 @@ eps_sub = (
         A_j=strength_multiple * eps_inf /1.5,
         eps_inf=0,
     )
+    + snompy.sample.drude_perm(
+        drude_wavenumber_grid(wavenumber),
+        nu_plasma=drude_plasma_frequency,
+        gamma=drude_gamma,
+        eps_inf=0.0,
+    )
 )
 
 def add_noise(data):
     max = np.max(data)
-    noise = scipy.stats.norm.rvs(loc=0, scale=max/32, size=len(data), random_state=None)
+    noise = scipy.stats.norm.rvs(loc=0, scale=max/64, size=len(data), random_state=None)
 
     return data + noise
+
+
+def complex_eta_from_vector(eta_vector):
+    half_length = len(eta_vector) // 2
+    return eta_vector[:half_length] + 1j * eta_vector[half_length:]
+
+
+def lorentz_eps_sub(params):
+    amplitude_scale, nu_j, gamma_j, strength_multiple = params
+    return snompy.sample.lorentz_perm(
+        wavenumber,
+        nu_j=nu_j,
+        gamma_j=gamma_j,
+        A_j=amplitude_scale * strength_multiple,
+        eps_inf=0.0,
+    )
+
+
+def lorentz_parameter_bounds():
+    strength_multiple_min, strength_multiple_max = compute_strength_multiple_bounds()
+    lower_bounds = np.array(
+        [
+            np.min(eps_inf_range),
+            np.min(trans_phon_frequency_range),
+            np.min(gamma_ph_range),
+            strength_multiple_min,
+        ],
+        dtype=np.float64,
+    )
+    upper_bounds = np.array(
+        [
+            np.max(eps_inf_range),
+            np.max(trans_phon_frequency_range),
+            np.max(gamma_ph_range),
+            strength_multiple_max,
+        ],
+        dtype=np.float64,
+    )
+    return lower_bounds, upper_bounds
+
+
+def fit_lorentz_term(target_eta_vector, baseline_eps_sub, initial_params):
+    lower_bounds, upper_bounds = lorentz_parameter_bounds()
+    initial_params = np.clip(initial_params, lower_bounds, upper_bounds)
+
+    def residual(params):
+        predicted_eps_sub = baseline_eps_sub + lorentz_eps_sub(params)
+        return forward_function(predicted_eps_sub) - target_eta_vector
+
+    initial_eta_vector = forward_function(baseline_eps_sub + lorentz_eps_sub(initial_params))
+    result = least_squares(
+        residual,
+        initial_params,
+        bounds=(lower_bounds, upper_bounds),
+        method="trf",
+        x_scale=upper_bounds - lower_bounds,
+    )
+    refined_eta_vector = forward_function(baseline_eps_sub + lorentz_eps_sub(result.x))
+    return initial_params, result, initial_eta_vector, refined_eta_vector
 
 
 lorentz_sample = snompy.sample.bulk_sample(eps_sub=eps_sub)
@@ -417,76 +505,60 @@ eta_vector = eta_to_vector(eta)
 target_eta_vector = eta_vector.copy()
 
 
-recovered_eps_sub = np.zeros_like(eps_sub, dtype=np.complex128)
-recovered_eta_vector_total = np.zeros_like(eta_vector, dtype=np.float64)
+_, joint_optimization_result, _ = optimize_parameters(
+    target_eta_vector,
+    MODEL_PATH,
+    wavenumber,
+)
+joint_eps_sub = epsilon_from_params(joint_optimization_result.x, wavenumber)
+
+kk_start_time = perf_counter()
+kk_optimization_result = kk_optimize(eta, joint_eps_sub)
+kk_optimization_seconds = perf_counter() - kk_start_time
+
+initial_joint_eps_sub = kk_optimization_result.eps_recovered
+initial_joint_eta = complex_eta_from_vector(kk_optimization_result.eta_recovered)
+joint_eta_residual_vector = target_eta_vector - kk_optimization_result.eta_recovered
+
+recovered_eps_sub = initial_joint_eps_sub.copy()
+lorentz_seed = joint_optimization_result.x[[0, 4, 1, 5]]
 peak_fit_records = []
 
-for iteration_index in range(NUM_FIT_ITERATIONS):
-    fit_target_eta_vector = eta_vector.copy()
-    initial_guess, optimization_result, _ = optimize_parameters(
-        fit_target_eta_vector,
-        MODEL_PATH,
-        wavenumber,
+for iteration_index in range(NUM_FIT_ITERATIONS - 1):
+    initial_params, optimization_result, initial_eta_vector, recovered_eta_vector = (
+        fit_lorentz_term(target_eta_vector, recovered_eps_sub, lorentz_seed)
     )
     recovered_params = optimization_result.x
-    recovered_eps_inf, recovered_trans_phon_frequency, recovered_gamma, recovered_strength_multiple = recovered_params
-    recovered_eps_sub = recovered_eps_sub + snompy.sample.lorentz_perm(
-        wavenumber,
-        nu_j=recovered_trans_phon_frequency,
-        gamma_j=recovered_gamma,
-        A_j=recovered_eps_inf * recovered_strength_multiple,
-        eps_inf=eps_inf if iteration_index == NUM_FIT_ITERATIONS - 1 else 0,
-    )
+    recovered_eps_sub = recovered_eps_sub + lorentz_eps_sub(recovered_params)
+    lorentz_seed = recovered_params
 
-    recovered_eta_vector = forward_function_from_params(recovered_params, wavenumber)
-    initial_eta_vector = forward_function_from_params(initial_guess, wavenumber)
     peak_fit_records.append(
         {
-            "peak_index": iteration_index + 1,
-            "target_eta_vector": fit_target_eta_vector,
-            "initial_params": initial_guess.copy(),
+            "peak_index": iteration_index + 2,
+            "target_eta_vector": target_eta_vector,
+            "initial_params": initial_params.copy(),
             "refined_params": recovered_params.copy(),
             "initial_eta_vector": initial_eta_vector,
             "refined_eta_vector": recovered_eta_vector,
             "initial_residual_norm": float(
-                np.linalg.norm(initial_eta_vector - fit_target_eta_vector)
+                np.linalg.norm(initial_eta_vector - target_eta_vector)
             ),
             "refined_residual_norm": float(
-                np.linalg.norm(recovered_eta_vector - fit_target_eta_vector)
+                np.linalg.norm(recovered_eta_vector - target_eta_vector)
             ),
         }
     )
-    recovered_eta_vector_total = recovered_eta_vector_total + recovered_eta_vector
-    eta_vector = eta_vector - recovered_eta_vector
 
 plot_peak_fit_progress(wavenumber, peak_fit_records)
 
-
-half_length = len(recovered_eta_vector_total) // 2
-recovered_eta = (
-    recovered_eta_vector_total[:half_length]
-    + 1j * recovered_eta_vector_total[half_length:]
-)
-lorentz_recovered_eps_sub = recovered_eps_sub.copy()
-lorentz_recovered_eta = recovered_eta.copy()
-
-kk_start_time = perf_counter()
-kk_optimization_result = kk_optimize(eta, lorentz_recovered_eps_sub)
-kk_optimization_seconds = perf_counter() - kk_start_time
-recovered_eps_sub = kk_optimization_result.eps_recovered
-recovered_eta_vector = kk_optimization_result.eta_recovered
-half_length = len(recovered_eta_vector) // 2
-recovered_eta = (
-    recovered_eta_vector[:half_length]
-    + 1j * recovered_eta_vector[half_length:]
-)
-lorentz_eta_residual_vector = target_eta_vector - eta_to_vector(lorentz_recovered_eta)
-eta_residual_vector = target_eta_vector - eta_to_vector(recovered_eta)
+recovered_eta_vector = forward_function(recovered_eps_sub)
+recovered_eta = complex_eta_from_vector(recovered_eta_vector)
+eta_residual_vector = target_eta_vector - recovered_eta_vector
 
 plot_dielectric_summary(
     wavenumber,
     eps_sub,
-    lorentz_recovered_eps_sub,
+    initial_joint_eps_sub,
     recovered_eps_sub,
     ERROR_WINDOW,
 )
@@ -494,15 +566,15 @@ plot_dielectric_summary(
 plot_eta_summary(
     wavenumber,
     eta,
-    lorentz_recovered_eta,
+    initial_joint_eta,
     recovered_eta,
     eta_residual_vector,
     ERROR_WINDOW,
 )
 
 
-print(f"Lorentz residual norm: {np.linalg.norm(lorentz_eta_residual_vector):.6e}")
-print(f"KK residual norm: {np.linalg.norm(eta_residual_vector):.6e}")
+print(f"Initial joint residual norm: {np.linalg.norm(joint_eta_residual_vector):.6e}")
+print(f"Final residual norm: {np.linalg.norm(eta_residual_vector):.6e}")
 print(f"KK optimization time: {kk_optimization_seconds:.6f} s")
 print(f"KK optimizer status: {kk_optimization_result.status}")
 print(eta_residual_vector.shape)

@@ -8,7 +8,7 @@ from pathlib import Path
 from data_gen import (
     NUM_PARAMETERS,
     PARAMETER_NAMES,
-    dataset,
+    load_or_create_training_data,
     n_wav,
 )
 
@@ -22,6 +22,14 @@ MODEL_PATH = Path("conv_network_2.pth")
 num_var = NUM_PARAMETERS
 loss_fn = nn.MSELoss()
 mae_fn = nn.L1Loss()
+
+
+def get_device():
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def cpu_state_dict(model):
+    return {name: value.detach().cpu() for name, value in model.state_dict().items()}
 
 
 def normalize_labels(y, label_mean, label_std):
@@ -68,11 +76,14 @@ class ConvNetwork(nn.Module):
 
 def train_loop(dataloader, model, loss_fn, optimizer, label_mean, label_std):
     size = len(dataloader.dataset)
+    device = next(model.parameters()).device
     model.train()
     total_loss = 0.0
     num_batches = len(dataloader)
 
     for batch, (X, y) in enumerate(dataloader):
+        X = X.to(device)
+        y = y.to(device)
         pred = model(X)
         y_normalized = normalize_labels(y, label_mean, label_std)
         loss = loss_fn(pred, y_normalized)
@@ -89,11 +100,14 @@ def train_loop(dataloader, model, loss_fn, optimizer, label_mean, label_std):
 
 
 def test_loop(dataloader, model, loss_fn, mae, label_mean, label_std):
+    device = next(model.parameters()).device
     num_batches = len(dataloader)
     test_loss, test_mae = 0.0, 0.0
 
     with torch.no_grad():
         for X, y in dataloader:
+            X = X.to(device)
+            y = y.to(device)
             pred_normalized = model(X)
             y_normalized = normalize_labels(y, label_mean, label_std)
             test_loss += loss_fn(pred_normalized, y_normalized).item()
@@ -127,13 +141,16 @@ def compute_label_stats(dataloader):
 
 
 def evaluate_midpoint_sample(model, dataloader, training_medians, label_mean, label_std):
-    total_squared_error = torch.zeros(num_var)
-    total_absolute_error = torch.zeros(num_var)
+    device = next(model.parameters()).device
+    total_squared_error = torch.zeros(num_var, device=device)
+    total_absolute_error = torch.zeros(num_var, device=device)
     total_samples = 0
 
     model.eval()
     with torch.no_grad():
         for X, y in dataloader:
+            X = X.to(device)
+            y = y.to(device)
             pred_normalized = model(X)
             pred = denormalize_labels(pred_normalized, label_mean, label_std)
             total_squared_error += torch.sum((pred - y) ** 2, dim=0)
@@ -173,11 +190,16 @@ def plot_losses(train_losses, val_losses):
 
 def run_experiment(dataloaders):
     train_dataloader, val_dataloader, test_dataloader = dataloaders
+    device = get_device()
+    print(f"Using device: {device}")
 
-    training_medians = compute_training_medians(train_dataloader)
-    label_mean, label_std = compute_label_stats(train_dataloader)
+    training_medians_cpu = compute_training_medians(train_dataloader)
+    label_mean_cpu, label_std_cpu = compute_label_stats(train_dataloader)
+    training_medians = training_medians_cpu.to(device)
+    label_mean = label_mean_cpu.to(device)
+    label_std = label_std_cpu.to(device)
 
-    model = ConvNetwork(n_wav * 2)
+    model = ConvNetwork(n_wav * 2).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     final_mae, final_loss = None, None
@@ -195,9 +217,9 @@ def run_experiment(dataloaders):
     plot_losses(train_losses, val_losses)
     torch.save(
         {
-            "model_state_dict": model.state_dict(),
-            "label_mean": label_mean.cpu(),
-            "label_std": label_std.cpu(),
+            "model_state_dict": cpu_state_dict(model),
+            "label_mean": label_mean_cpu,
+            "label_std": label_std_cpu,
         },
         MODEL_PATH,
     )
@@ -206,4 +228,4 @@ def run_experiment(dataloaders):
 
 
 if __name__ == "__main__":
-    run_experiment(dataset)
+    run_experiment(load_or_create_training_data())
