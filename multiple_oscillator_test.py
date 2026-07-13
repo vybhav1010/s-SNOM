@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import least_squares
+from scipy.signal import savgol_filter
 from time import perf_counter
 from conv_network_2 import ConvNetwork, MODEL_PATH
 from data_gen import (
@@ -35,8 +36,8 @@ eps_inf = 1.6
 gamma = 20
 trans_phon_frequency = 876
 long_phon_frequency = 886
-drude_gamma = float(np.median(gamma_p_range))
-drude_plasma_frequency = float(np.median(plas_freq_range))
+drude_gamma = float(np.max(gamma_p_range))
+drude_plasma_frequency = float(np.min(plas_freq_range))
 
 batch_size = 16
 
@@ -44,7 +45,7 @@ long_phon_frequency_stop = 960
 long_phon_frequency_step = 100
 
 ERROR_WINDOW = (550.0, 800.0)
-NUM_FIT_ITERATIONS = 2
+MAX_ADDITIONAL_PEAKS = 10
 
 def alpha_fff_ref():
     eps = 11.7
@@ -91,7 +92,7 @@ def _absolute_and_percent_errors(true_values, fitted_values):
 def plot_eta_summary(
     wavenumber_values,
     true_eta,
-    lorentz_eta,
+    pre_kk_eta,
     recovered_eta,
     eta_residual_vector,
     window,
@@ -101,13 +102,13 @@ def plot_eta_summary(
         wavenumber_values,
         window,
     )
-    lorentz_real_abs, lorentz_real_pct = _absolute_and_percent_errors(
+    pre_kk_real_abs, pre_kk_real_pct = _absolute_and_percent_errors(
         true_eta.real,
-        lorentz_eta.real,
+        pre_kk_eta.real,
     )
-    lorentz_imag_abs, lorentz_imag_pct = _absolute_and_percent_errors(
+    pre_kk_imag_abs, pre_kk_imag_pct = _absolute_and_percent_errors(
         true_eta.imag,
-        lorentz_eta.imag,
+        pre_kk_eta.imag,
     )
     kk_real_abs, kk_real_pct = _absolute_and_percent_errors(
         true_eta.real,
@@ -124,15 +125,15 @@ def plot_eta_summary(
     axes[0, 0].plot(wavenumber_values, true_eta.imag, label="True Im(eta)", linewidth=2)
     axes[0, 0].plot(
         wavenumber_values,
-        lorentz_eta.real,
-        label="Initial Joint Re(eta)",
+        pre_kk_eta.real,
+        label="Pre-KK Re(eta)",
         linewidth=2,
         linestyle=":",
     )
     axes[0, 0].plot(
         wavenumber_values,
-        lorentz_eta.imag,
-        label="Initial Joint Im(eta)",
+        pre_kk_eta.imag,
+        label="Pre-KK Im(eta)",
         linewidth=2,
         linestyle=":",
     )
@@ -157,15 +158,15 @@ def plot_eta_summary(
 
     axes[0, 1].plot(
         windowed_wavenumber,
-        lorentz_real_abs[window_mask],
-        label="Initial Joint |Re(eta) Error|",
+        pre_kk_real_abs[window_mask],
+        label="Pre-KK |Re(eta) Error|",
         linewidth=2,
         linestyle=":",
     )
     axes[0, 1].plot(
         windowed_wavenumber,
-        lorentz_imag_abs[window_mask],
-        label="Initial Joint |Im(eta) Error|",
+        pre_kk_imag_abs[window_mask],
+        label="Pre-KK |Im(eta) Error|",
         linewidth=2,
         linestyle=":",
     )
@@ -191,15 +192,15 @@ def plot_eta_summary(
 
     axes[1, 0].plot(
         windowed_wavenumber,
-        lorentz_real_pct[window_mask],
-        label="Initial Joint Re(eta) % Error",
+        pre_kk_real_pct[window_mask],
+        label="Pre-KK Re(eta) % Error",
         linewidth=2,
         linestyle=":",
     )
     axes[1, 0].plot(
         windowed_wavenumber,
-        lorentz_imag_pct[window_mask],
-        label="Initial Joint Im(eta) % Error",
+        pre_kk_imag_pct[window_mask],
+        label="Pre-KK Im(eta) % Error",
         linewidth=2,
         linestyle=":",
     )
@@ -248,7 +249,7 @@ def plot_eta_summary(
 def plot_dielectric_summary(
     wavenumber_values,
     true_eps,
-    lorentz_eps,
+    pre_kk_eps,
     recovered_eps,
     window,
     output_filename="multiple_oscillator_eps_summary.png",
@@ -257,13 +258,13 @@ def plot_dielectric_summary(
         wavenumber_values,
         window,
     )
-    lorentz_real_abs, lorentz_real_pct = _absolute_and_percent_errors(
+    pre_kk_real_abs, pre_kk_real_pct = _absolute_and_percent_errors(
         true_eps.real,
-        lorentz_eps.real,
+        pre_kk_eps.real,
     )
-    lorentz_imag_abs, lorentz_imag_pct = _absolute_and_percent_errors(
+    pre_kk_imag_abs, pre_kk_imag_pct = _absolute_and_percent_errors(
         true_eps.imag,
-        lorentz_eps.imag,
+        pre_kk_eps.imag,
     )
     kk_real_abs, kk_real_pct = _absolute_and_percent_errors(
         true_eps.real,
@@ -280,15 +281,15 @@ def plot_dielectric_summary(
     axes[0].plot(wavenumber_values, true_eps.imag, label="True Im(eps)", linewidth=2)
     axes[0].plot(
         wavenumber_values,
-        lorentz_eps.real,
-        label="Initial Joint Re(eps)",
+        pre_kk_eps.real,
+        label="Pre-KK Re(eps)",
         linewidth=2,
         linestyle=":",
     )
     axes[0].plot(
         wavenumber_values,
-        lorentz_eps.imag,
-        label="Initial Joint Im(eps)",
+        pre_kk_eps.imag,
+        label="Pre-KK Im(eps)",
         linewidth=2,
         linestyle=":",
     )
@@ -313,15 +314,15 @@ def plot_dielectric_summary(
 
     axes[1].plot(
         windowed_wavenumber,
-        lorentz_real_abs[window_mask],
-        label="Initial Joint |Re(eps) Error|",
+        pre_kk_real_abs[window_mask],
+        label="Pre-KK |Re(eps) Error|",
         linewidth=2,
         linestyle=":",
     )
     axes[1].plot(
         windowed_wavenumber,
-        lorentz_imag_abs[window_mask],
-        label="Initial Joint |Im(eps) Error|",
+        pre_kk_imag_abs[window_mask],
+        label="Pre-KK |Im(eps) Error|",
         linewidth=2,
         linestyle=":",
     )
@@ -349,15 +350,15 @@ def plot_dielectric_summary(
 
     axes[2].plot(
         windowed_wavenumber,
-        lorentz_real_pct[window_mask],
-        label="Initial Joint Re(eps) % Error",
+        pre_kk_real_pct[window_mask],
+        label="Pre-KK Re(eps) % Error",
         linewidth=2,
         linestyle=":",
     )
     axes[2].plot(
         windowed_wavenumber,
-        lorentz_imag_pct[window_mask],
-        label="Initial Joint Im(eps) % Error",
+        pre_kk_imag_pct[window_mask],
+        label="Pre-KK Im(eps) % Error",
         linewidth=2,
         linestyle=":",
     )
@@ -415,7 +416,7 @@ eps_sub = (
 
 def add_noise(data):
     max = np.max(data)
-    noise = scipy.stats.norm.rvs(loc=0, scale=max/64, size=len(data), random_state=None)
+    noise = scipy.stats.norm.rvs(loc=0, scale=max/32, size=len(data), random_state=None)
 
     return data + noise
 
@@ -461,6 +462,7 @@ def lorentz_parameter_bounds():
 
 def fit_lorentz_term(target_eta_vector, baseline_eps_sub, initial_params):
     lower_bounds, upper_bounds = lorentz_parameter_bounds()
+
     initial_params = np.clip(initial_params, lower_bounds, upper_bounds)
 
     def residual(params):
@@ -511,30 +513,36 @@ _, joint_optimization_result, _ = optimize_parameters(
     wavenumber,
 )
 joint_eps_sub = epsilon_from_params(joint_optimization_result.x, wavenumber)
-
-kk_start_time = perf_counter()
-kk_optimization_result = kk_optimize(eta, joint_eps_sub)
-kk_optimization_seconds = perf_counter() - kk_start_time
-
-initial_joint_eps_sub = kk_optimization_result.eps_recovered
-initial_joint_eta = complex_eta_from_vector(kk_optimization_result.eta_recovered)
-joint_eta_residual_vector = target_eta_vector - kk_optimization_result.eta_recovered
+initial_joint_eps_sub = joint_eps_sub.copy()
+initial_joint_eta_vector = forward_function(initial_joint_eps_sub)
+joint_eta_residual_vector = target_eta_vector - initial_joint_eta_vector
 
 recovered_eps_sub = initial_joint_eps_sub.copy()
 lorentz_seed = joint_optimization_result.x[[0, 4, 1, 5]]
 peak_fit_records = []
+best_additional_peak_count = 0
+best_pre_kk_eps_sub = recovered_eps_sub.copy()
+best_pre_kk_eta_vector = initial_joint_eta_vector.copy()
+best_pre_kk_residual_norm = float(np.linalg.norm(joint_eta_residual_vector))
 
-for iteration_index in range(NUM_FIT_ITERATIONS - 1):
+for additional_peak_count in range(1, MAX_ADDITIONAL_PEAKS + 1):
     initial_params, optimization_result, initial_eta_vector, recovered_eta_vector = (
         fit_lorentz_term(target_eta_vector, recovered_eps_sub, lorentz_seed)
     )
     recovered_params = optimization_result.x
     recovered_eps_sub = recovered_eps_sub + lorentz_eps_sub(recovered_params)
     lorentz_seed = recovered_params
+    residual_norm = float(np.linalg.norm(recovered_eta_vector - target_eta_vector))
+
+    if residual_norm < best_pre_kk_residual_norm:
+        best_additional_peak_count = additional_peak_count
+        best_pre_kk_eps_sub = recovered_eps_sub.copy()
+        best_pre_kk_eta_vector = recovered_eta_vector.copy()
+        best_pre_kk_residual_norm = residual_norm
 
     peak_fit_records.append(
         {
-            "peak_index": iteration_index + 2,
+            "peak_index": additional_peak_count + 1,
             "target_eta_vector": target_eta_vector,
             "initial_params": initial_params.copy(),
             "refined_params": recovered_params.copy(),
@@ -543,22 +551,40 @@ for iteration_index in range(NUM_FIT_ITERATIONS - 1):
             "initial_residual_norm": float(
                 np.linalg.norm(initial_eta_vector - target_eta_vector)
             ),
-            "refined_residual_norm": float(
-                np.linalg.norm(recovered_eta_vector - target_eta_vector)
-            ),
+            "refined_residual_norm": residual_norm,
         }
     )
 
 plot_peak_fit_progress(wavenumber, peak_fit_records)
 
-recovered_eta_vector = forward_function(recovered_eps_sub)
+pre_kk_eps_sub = best_pre_kk_eps_sub
+pre_kk_eta_vector = best_pre_kk_eta_vector
+pre_kk_eta = complex_eta_from_vector(pre_kk_eta_vector)
+pre_kk_eta_residual_vector = target_eta_vector - pre_kk_eta_vector
+
+kk_start_time = perf_counter()
+kk_optimization_result = kk_optimize(eta, pre_kk_eps_sub)
+kk_optimization_seconds = perf_counter() - kk_start_time
+
+recovered_eps_sub = kk_optimization_result.eps_recovered
+
+recovered_eps_sub_real = recovered_eps_sub.real
+recovered_eps_sub_imag = recovered_eps_sub.imag
+
+recovered_eps_sub_real_filt = savgol_filter(recovered_eps_sub_real, 17, 6)
+recovered_eps_sub_imag_filt = savgol_filter(recovered_eps_sub_imag, 17, 6)
+
+recovered_eps_sub = recovered_eps_sub_real_filt + recovered_eps_sub_imag_filt * 1j
+
+
+recovered_eta_vector = kk_optimization_result.eta_recovered
 recovered_eta = complex_eta_from_vector(recovered_eta_vector)
 eta_residual_vector = target_eta_vector - recovered_eta_vector
 
 plot_dielectric_summary(
     wavenumber,
     eps_sub,
-    initial_joint_eps_sub,
+    pre_kk_eps_sub,
     recovered_eps_sub,
     ERROR_WINDOW,
 )
@@ -566,7 +592,7 @@ plot_dielectric_summary(
 plot_eta_summary(
     wavenumber,
     eta,
-    initial_joint_eta,
+    pre_kk_eta,
     recovered_eta,
     eta_residual_vector,
     ERROR_WINDOW,
@@ -574,6 +600,8 @@ plot_eta_summary(
 
 
 print(f"Initial joint residual norm: {np.linalg.norm(joint_eta_residual_vector):.6e}")
+print(f"Best additional peak count: {best_additional_peak_count}")
+print(f"Pre-KK residual norm: {np.linalg.norm(pre_kk_eta_residual_vector):.6e}")
 print(f"Final residual norm: {np.linalg.norm(eta_residual_vector):.6e}")
 print(f"KK optimization time: {kk_optimization_seconds:.6f} s")
 print(f"KK optimizer status: {kk_optimization_result.status}")

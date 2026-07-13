@@ -25,8 +25,9 @@ mae_fn = nn.L1Loss()
 
 
 def get_device():
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    print(device)
+    return device
 
 def cpu_state_dict(model):
     return {name: value.detach().cpu() for name, value in model.state_dict().items()}

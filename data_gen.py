@@ -8,8 +8,11 @@ from pathlib import Path
 eps_inf_range = np.linspace(1, 5, 5)
 gamma_ph_range = np.linspace(10, 50, 5)
 gamma_p_range = np.linspace(250, 500, 5)
-trans_phon_frequency_range = np.linspace(550, 950,5)
+trans_phon_frequency_range = np.linspace(200,950,8)
 plas_freq_range = np.linspace(400, 800, 5)
+
+
+
 PARAMETER_NAMES = (
     "eps_inf",
     "gamma_ph",
